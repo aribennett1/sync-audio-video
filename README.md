@@ -1,6 +1,6 @@
 # Audio/Video Sync Tool
 
-A browser-only tool for syncing external audio with video. Load separate video and audio files, preview them in sync with an adjustable offset, compare waveforms side by side, and export a merged MP4 — all without a server.
+A browser-only tool for syncing external audio with video. Load separate video and audio files, preview them in sync with an adjustable offset, view the external audio waveform, and export a merged MP4 — all without a server.
 
 ## Features
 
@@ -18,13 +18,12 @@ A browser-only tool for syncing external audio with video. Load separate video a
   - Use the number input or ±0.1s / ±1s buttons for fine adjustment
 - **Mute toggle**: Mute or unmute the video's built-in audio track (external audio is unaffected)
 
-### Dual waveforms
+### External audio waveform
 
-- **Video audio**: Extracted via ffmpeg.wasm and rendered as a full-length waveform
-- **External audio**: Decoded with Web Audio API
-- External waveform shifts horizontally to reflect the current offset, so peaks align visually when sync is correct
-- Progress overlay on both waveforms tracks video playback position
-- Click either waveform to seek
+- Decoded with Web Audio API and rendered as a full-length waveform
+- Shifts horizontally to reflect the current offset relative to the video timeline
+- Progress overlay tracks video playback position
+- Click the waveform to seek
 
 ### Sync and Download
 
@@ -78,7 +77,7 @@ targetAudioTime = video.currentTime - offset
 | `@ffmpeg/core` | 0.12.6 | Self-hosted in `vendor/ffmpeg/` |
 | `coi-serviceworker` | — | Enables `SharedArrayBuffer` on static hosts |
 
-All ffmpeg.wasm files are self-hosted from `vendor/ffmpeg/` for same-origin loading. No build step or npm install required.
+All ffmpeg.wasm files are self-hosted from `vendor/ffmpeg/` for same-origin loading. ffmpeg is only loaded when you click **Sync and Download** — not on file load. No build step or npm install required.
 
 ### Large video files
 

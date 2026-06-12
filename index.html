@@ -244,12 +244,6 @@
       </div>
 
       <div class="waveform-section">
-        <div class="waveform-label">Video audio</div>
-        <div class="waveform-container">
-          <canvas id="videoWaveform" class="waveform-canvas"></canvas>
-          <canvas id="videoProgress" class="progress-overlay"></canvas>
-        </div>
-
         <div class="waveform-label">External audio</div>
         <div class="waveform-container">
           <canvas id="audioWaveform" class="waveform-canvas"></canvas>
@@ -279,11 +273,6 @@
       const syncDownload = document.getElementById("syncDownload");
       const statusText = document.getElementById("statusText");
 
-      const videoCanvas = document.getElementById("videoWaveform");
-      const videoCtx = videoCanvas.getContext("2d");
-      const videoProgressCanvas = document.getElementById("videoProgress");
-      const videoProgressCtx = videoProgressCanvas.getContext("2d");
-
       const audioCanvas = document.getElementById("audioWaveform");
       const audioCtx2d = audioCanvas.getContext("2d");
       const audioProgressCanvas = document.getElementById("audioProgress");
@@ -295,7 +284,6 @@
       let audioFile = null;
       let videoUrl = null;
       let audioUrl = null;
-      let videoAudioBuffer = null;
       let externalAudioBuffer = null;
       let videoMuted = false;
 
@@ -330,23 +318,22 @@
         syncDownload.disabled = !videoFile || !audioFile || isExporting;
       }
 
-      function resizeCanvases() {
-        [videoCanvas, videoProgressCanvas, audioCanvas, audioProgressCanvas].forEach((canvas) => {
-          const rect = canvas.getBoundingClientRect();
-          canvas.width = rect.width || 1;
-          canvas.height = rect.height || 1;
-        });
+      function resizeCanvas() {
+        const rect = audioCanvas.getBoundingClientRect();
+        const width = rect.width || 1;
+        const height = rect.height || 1;
+        audioCanvas.width = width;
+        audioCanvas.height = height;
+        audioProgressCanvas.width = width;
+        audioProgressCanvas.height = height;
 
-        if (videoAudioBuffer) {
-          drawWaveformToCanvas(videoCanvas, videoCtx, videoAudioBuffer, 0);
-        }
         if (externalAudioBuffer) {
           redrawExternalWaveform();
         }
       }
 
-      window.addEventListener("resize", resizeCanvases);
-      resizeCanvases();
+      window.addEventListener("resize", resizeCanvas);
+      resizeCanvas();
 
       function drawWaveformToCanvas(canvas, ctx, audioBuffer, shiftPx) {
         const sampleCount = canvas.width;
@@ -383,17 +370,6 @@
           const barHeight = Math.min(v * halfHeight * amplification, halfHeight);
           ctx.fillRect(drawX, midY - barHeight, 1, barHeight * 2);
         }
-      }
-
-      function drawWaveformLoadingState(canvas, ctx, message) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = "#111";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = "rgba(74, 158, 255, 0.3)";
-        ctx.fillRect(0, canvas.height / 2 - 2, canvas.width, 4);
-        ctx.font = "12px Arial";
-        ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
-        ctx.fillText(message, 8, 18);
       }
 
       function drawFlatFallback(canvas, ctx) {
@@ -450,59 +426,8 @@
         return audioCtx.decodeAudioData(arrayBuffer);
       }
 
-      async function extractVideoAudioWithFFmpeg(file) {
-        const ff = await getFFmpeg();
-        const mountDir = "/input";
-        const inputName = safeFfmpegInputName(file.name, ".mp4");
-        const inputPath = `${mountDir}/${inputName}`;
-        const outputName = "audio.mp3";
-
-        const inputFile =
-          file.name === inputName
-            ? file
-            : new File([file], inputName, { type: file.type });
-
-        await ff.createDir(mountDir);
-        await ff.mount("WORKERFS", { files: [inputFile] }, mountDir);
-
-        try {
-          await ff.exec([
-            "-i", inputPath,
-            "-vn",
-            "-ac", "1",
-            "-ar", "8000",
-            "-b:a", "8k",
-            "-f", "mp3",
-            outputName,
-          ]);
-
-          const data = await ff.readFile(outputName);
-          await ff.deleteFile(outputName);
-          return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-        } finally {
-          await ff.unmount(mountDir);
-          await ff.deleteDir(mountDir);
-        }
-      }
-
-      async function renderVideoWaveform() {
-        resizeCanvases();
-        if (!videoFile) return;
-
-        drawWaveformLoadingState(videoCanvas, videoCtx, "Generating waveform\u2026");
-        try {
-          const audioArrayBuffer = await extractVideoAudioWithFFmpeg(videoFile);
-          videoAudioBuffer = await decodeAudioBuffer(audioArrayBuffer);
-          drawWaveformToCanvas(videoCanvas, videoCtx, videoAudioBuffer, 0);
-        } catch (err) {
-          console.warn(ts(), "[waveform] Video audio extraction failed:", err);
-          videoAudioBuffer = null;
-          drawFlatFallback(videoCanvas, videoCtx);
-        }
-      }
-
       async function renderExternalWaveform() {
-        resizeCanvases();
+        resizeCanvas();
         if (!audioFile || !audioUrl) return;
 
         try {
@@ -566,19 +491,18 @@
         progressCtx.fillRect(progressX - 1, 0, 2, progressCanvas.height);
       }
 
-      function animateProgressOverlays() {
-        drawProgressOverlay(videoProgressCanvas, videoProgressCtx);
+      function animateProgressOverlay() {
         drawProgressOverlay(audioProgressCanvas, audioProgressCtx);
-        requestAnimationFrame(animateProgressOverlays);
+        requestAnimationFrame(animateProgressOverlay);
       }
 
-      animateProgressOverlays();
+      animateProgressOverlay();
 
       function revokeUrl(url) {
         if (url) URL.revokeObjectURL(url);
       }
 
-      videoInput.addEventListener("change", async function () {
+      videoInput.addEventListener("change", function () {
         const file = this.files[0];
         if (!file) return;
 
@@ -591,7 +515,6 @@
         videoPlayer.load();
         videoPlayer.muted = videoMuted;
 
-        await renderVideoWaveform();
         redrawExternalWaveform();
         updateSyncButton();
       });
@@ -642,15 +565,6 @@
 
       ["play", "pause", "seeked", "timeupdate", "ratechange"].forEach((event) => {
         videoPlayer.addEventListener(event, syncAudioToVideo);
-      });
-
-      videoCanvas.addEventListener("click", function (e) {
-        if (!videoPlayer.duration) return;
-        const rect = videoCanvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const percentage = x / rect.width;
-        videoPlayer.currentTime = Math.max(0, Math.min(percentage * videoPlayer.duration, videoPlayer.duration));
-        syncAudioToVideo();
       });
 
       audioCanvas.addEventListener("click", function (e) {
