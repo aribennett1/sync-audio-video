@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Audio/Video Sync Tool</title>
+    <script src="coi-serviceworker.js"></script>
+    <script src="vendor/ffmpeg/ffmpeg.js"></script>
+    <style>
+      body {
+        background-color: #000;
+        font-family: Arial, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        margin: 0;
+        padding: 20px;
+        color: #fff;
+      }
+
+      .media-container {
+        max-width: 100%;
+        width: 720px;
+        background: #111;
+        padding: 20px;
+        border-radius: 16px;
+        box-shadow: 0 4px 12px rgba(255, 255, 255, 0.1);
+      }
+
+      h1 {
+        margin: 0 0 20px 0;
+        font-size: 22px;
+        color: #4a9eff;
+        text-align: center;
+      }
+
+      video {
+        width: 100%;
+        border-radius: 8px;
+        background-color: #000;
+      }
+
+      .file-inputs {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-top: 20px;
+      }
+
+      .file-input-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .file-input-row label {
+        min-width: 60px;
+        color: #aaa;
+        font-size: 14px;
+      }
+
+      input[type="file"] {
+        flex: 1;
+        background: #222;
+        color: #fff;
+        border: 1px solid #555;
+        padding: 5px;
+        border-radius: 6px;
+      }
+
+      .file-name {
+        font-size: 12px;
+        color: #777;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 200px;
+      }
+
+      .controls-row {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 15px;
+      }
+
+      button {
+        background: #333;
+        color: #fff;
+        border: 1px solid #555;
+        padding: 8px 14px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+
+      button:hover:not(:disabled) {
+        background: #444;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      button.primary {
+        background: #4a9eff;
+        color: #000;
+        border-color: #4a9eff;
+        font-weight: bold;
+      }
+
+      button.primary:hover:not(:disabled) {
+        background: #6bb3ff;
+      }
+
+      .offset-section {
+        margin-top: 15px;
+        background: #222;
+        border-radius: 8px;
+        padding: 15px;
+      }
+
+      .offset-section label {
+        display: block;
+        margin-bottom: 8px;
+        color: #4a9eff;
+        font-size: 14px;
+      }
+
+      .offset-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .offset-controls input[type="number"] {
+        width: 120px;
+        padding: 8px;
+        font-size: 16px;
+        background: #111;
+        color: #fff;
+        border: 1px solid #555;
+        border-radius: 6px;
+      }
+
+      .offset-hint {
+        font-size: 12px;
+        color: #777;
+        margin-top: 8px;
+      }
+
+      .waveform-section {
+        margin-top: 20px;
+      }
+
+      .waveform-label {
+        font-size: 13px;
+        color: #aaa;
+        margin-bottom: 4px;
+      }
+
+      .waveform-container {
+        position: relative;
+        width: 100%;
+        margin-bottom: 15px;
+      }
+
+      .waveform-canvas {
+        width: 100%;
+        height: 80px;
+        background: #111;
+        display: block;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+
+      .progress-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 80px;
+        pointer-events: none;
+        border-radius: 4px;
+      }
+
+      .export-section {
+        margin-top: 20px;
+        text-align: center;
+      }
+
+      #statusText {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #aaa;
+        min-height: 18px;
+      }
+
+      #statusText.error {
+        color: #ff6b6b;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="media-container">
+      <h1>Audio/Video Sync Tool</h1>
+
+      <video id="videoPlayer" controls></video>
+
+      <div class="file-inputs">
+        <div class="file-input-row">
+          <label for="videoInput">Video:</label>
+          <input type="file" id="videoInput" accept="video/*" />
+          <span class="file-name" id="videoFileName">No file selected</span>
+        </div>
+        <div class="file-input-row">
+          <label for="audioInput">Audio:</label>
+          <input type="file" id="audioInput" accept="audio/*" />
+          <span class="file-name" id="audioFileName">No file selected</span>
+        </div>
+      </div>
+
+      <div class="controls-row">
+        <button type="button" id="muteToggle">Mute video audio</button>
+      </div>
+
+      <div class="offset-section">
+        <label for="offsetControl">Audio offset (seconds)</label>
+        <div class="offset-controls">
+          <button type="button" id="offsetMinus1">−1s</button>
+          <button type="button" id="offsetMinus01">−0.1s</button>
+          <input type="number" id="offsetControl" step="0.01" value="0" />
+          <button type="button" id="offsetPlus01">+0.1s</button>
+          <button type="button" id="offsetPlus1">+1s</button>
+        </div>
+        <p class="offset-hint">
+          Positive = external audio starts later (matches ffmpeg -itsoffset).
+        </p>
+      </div>
+
+      <div class="waveform-section">
+        <div class="waveform-label">Video audio</div>
+        <div class="waveform-container">
+          <canvas id="videoWaveform" class="waveform-canvas"></canvas>
+          <canvas id="videoProgress" class="progress-overlay"></canvas>
+        </div>
+
+        <div class="waveform-label">External audio</div>
+        <div class="waveform-container">
+          <canvas id="audioWaveform" class="waveform-canvas"></canvas>
+          <canvas id="audioProgress" class="progress-overlay"></canvas>
+        </div>
+      </div>
+
+      <div class="export-section">
+        <button type="button" id="syncDownload" class="primary" disabled>
+          Sync and Download
+        </button>
+        <div id="statusText"></div>
+      </div>
+    </div>
+
+    <audio id="audioPlayer" hidden></audio>
+
+    <script>
+      const videoInput = document.getElementById("videoInput");
+      const audioInput = document.getElementById("audioInput");
+      const videoFileName = document.getElementById("videoFileName");
+      const audioFileName = document.getElementById("audioFileName");
+      const videoPlayer = document.getElementById("videoPlayer");
+      const audioPlayer = document.getElementById("audioPlayer");
+      const muteToggle = document.getElementById("muteToggle");
+      const offsetControl = document.getElementById("offsetControl");
+      const syncDownload = document.getElementById("syncDownload");
+      const statusText = document.getElementById("statusText");
+
+      const videoCanvas = document.getElementById("videoWaveform");
+      const videoCtx = videoCanvas.getContext("2d");
+      const videoProgressCanvas = document.getElementById("videoProgress");
+      const videoProgressCtx = videoProgressCanvas.getContext("2d");
+
+      const audioCanvas = document.getElementById("audioWaveform");
+      const audioCtx2d = audioCanvas.getContext("2d");
+      const audioProgressCanvas = document.getElementById("audioProgress");
+      const audioProgressCtx = audioProgressCanvas.getContext("2d");
+
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+      let videoFile = null;
+      let audioFile = null;
+      let videoUrl = null;
+      let audioUrl = null;
+      let videoAudioBuffer = null;
+      let externalAudioBuffer = null;
+      let videoMuted = false;
+
+      let ffmpegInstance = null;
+      let ffmpegLoadPromise = null;
+      let isExporting = false;
+
+      const ts = () => `[${new Date().toISOString()}]`;
+
+      function ffmpegAsset(file) {
+        return new URL(`vendor/ffmpeg/${file}`, document.baseURI || window.location.href).href;
+      }
+
+      function safeFfmpegInputName(originalName, fallback) {
+        const ext = originalName.includes(".")
+          ? originalName.slice(originalName.lastIndexOf("."))
+          : fallback;
+        return "input" + ext.replace(/[^a-zA-Z0-9.]/g, "");
+      }
+
+      function getOffset() {
+        const val = parseFloat(offsetControl.value);
+        return isNaN(val) ? 0 : val;
+      }
+
+      function setStatus(message, isError) {
+        statusText.textContent = message;
+        statusText.className = isError ? "error" : "";
+      }
+
+      function updateSyncButton() {
+        syncDownload.disabled = !videoFile || !audioFile || isExporting;
+      }
+
+      function resizeCanvases() {
+        [videoCanvas, videoProgressCanvas, audioCanvas, audioProgressCanvas].forEach((canvas) => {
+          const rect = canvas.getBoundingClientRect();
+          canvas.width = rect.width || 1;
+          canvas.height = rect.height || 1;
+        });
+
+        if (videoAudioBuffer) {
+          drawWaveformToCanvas(videoCanvas, videoCtx, videoAudioBuffer, 0);
+        }
+        if (externalAudioBuffer) {
+          redrawExternalWaveform();
+        }
+      }
+
+      window.addEventListener("resize", resizeCanvases);
+      resizeCanvases();
+
+      function drawWaveformToCanvas(canvas, ctx, audioBuffer, shiftPx) {
+        const sampleCount = canvas.width;
+        if (sampleCount <= 0) return;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#111";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const channelData = audioBuffer.getChannelData(0);
+        const blockSize = Math.max(1, Math.floor(channelData.length / sampleCount));
+        const waveform = new Float32Array(sampleCount);
+
+        for (let i = 0; i < sampleCount; i++) {
+          let sum = 0;
+          const start = i * blockSize;
+          const end = Math.min(start + blockSize, channelData.length);
+          for (let j = start; j < end; j++) {
+            sum += Math.abs(channelData[j]);
+          }
+          waveform[i] = sum / (end - start || 1);
+        }
+
+        ctx.fillStyle = "#4a9eff";
+        const midY = canvas.height / 2;
+        const halfHeight = canvas.height / 2;
+        const amplification = 7;
+
+        for (let x = 0; x < waveform.length; x++) {
+          const drawX = x + shiftPx;
+          if (drawX < 0 || drawX >= canvas.width) continue;
+
+          const v = waveform[x];
+          const barHeight = Math.min(v * halfHeight * amplification, halfHeight);
+          ctx.fillRect(drawX, midY - barHeight, 1, barHeight * 2);
+        }
+      }
+
+      function drawWaveformLoadingState(canvas, ctx, message) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#111";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "rgba(74, 158, 255, 0.3)";
+        ctx.fillRect(0, canvas.height / 2 - 2, canvas.width, 4);
+        ctx.font = "12px Arial";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+        ctx.fillText(message, 8, 18);
+      }
+
+      function drawFlatFallback(canvas, ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#111";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#4a9eff";
+        const midY = canvas.height / 2;
+        const barHeight = canvas.height * 0.15;
+        ctx.fillRect(0, midY - barHeight, canvas.width, barHeight * 2);
+        ctx.font = "12px Arial";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+        ctx.fillText("Waveform unavailable", 8, 18);
+      }
+
+      function getExternalWaveformShiftPx() {
+        if (!videoPlayer.duration || !externalAudioBuffer) return 0;
+        return (getOffset() / videoPlayer.duration) * audioCanvas.width;
+      }
+
+      function redrawExternalWaveform() {
+        if (!externalAudioBuffer) return;
+        drawWaveformToCanvas(
+          audioCanvas,
+          audioCtx2d,
+          externalAudioBuffer,
+          getExternalWaveformShiftPx()
+        );
+      }
+
+      async function getFFmpeg() {
+        if (ffmpegInstance) return ffmpegInstance;
+        if (ffmpegLoadPromise) return ffmpegLoadPromise;
+
+        ffmpegLoadPromise = (async () => {
+          const { FFmpeg } = FFmpegWASM;
+          const coreURL = ffmpegAsset("ffmpeg-core.js");
+          const wasmURL = ffmpegAsset("ffmpeg-core.wasm");
+
+          const ff = new FFmpeg();
+          ff.on("log", ({ message }) => console.log(ts(), "[ffmpeg wasm]", message));
+
+          await ff.load({ coreURL, wasmURL });
+          ffmpegInstance = ff;
+          ffmpegLoadPromise = null;
+          return ff;
+        })();
+
+        return ffmpegLoadPromise;
+      }
+
+      async function decodeAudioBuffer(arrayBuffer) {
+        if (audioCtx.state === "suspended") await audioCtx.resume();
+        return audioCtx.decodeAudioData(arrayBuffer);
+      }
+
+      async function extractVideoAudioWithFFmpeg(file) {
+        const ff = await getFFmpeg();
+        const mountDir = "/input";
+        const inputName = safeFfmpegInputName(file.name, ".mp4");
+        const inputPath = `${mountDir}/${inputName}`;
+        const outputName = "audio.mp3";
+
+        const inputFile =
+          file.name === inputName
+            ? file
+            : new File([file], inputName, { type: file.type });
+
+        await ff.createDir(mountDir);
+        await ff.mount("WORKERFS", { files: [inputFile] }, mountDir);
+
+        try {
+          await ff.exec([
+            "-i", inputPath,
+            "-vn",
+            "-ac", "1",
+            "-ar", "8000",
+            "-b:a", "8k",
+            "-f", "mp3",
+            outputName,
+          ]);
+
+          const data = await ff.readFile(outputName);
+          await ff.deleteFile(outputName);
+          return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+        } finally {
+          await ff.unmount(mountDir);
+          await ff.deleteDir(mountDir);
+        }
+      }
+
+      async function renderVideoWaveform() {
+        resizeCanvases();
+        if (!videoFile) return;
+
+        drawWaveformLoadingState(videoCanvas, videoCtx, "Generating waveform\u2026");
+        try {
+          const audioArrayBuffer = await extractVideoAudioWithFFmpeg(videoFile);
+          videoAudioBuffer = await decodeAudioBuffer(audioArrayBuffer);
+          drawWaveformToCanvas(videoCanvas, videoCtx, videoAudioBuffer, 0);
+        } catch (err) {
+          console.warn(ts(), "[waveform] Video audio extraction failed:", err);
+          videoAudioBuffer = null;
+          drawFlatFallback(videoCanvas, videoCtx);
+        }
+      }
+
+      async function renderExternalWaveform() {
+        resizeCanvases();
+        if (!audioFile || !audioUrl) return;
+
+        try {
+          const arrayBuffer = await fetch(audioUrl).then((r) => r.arrayBuffer());
+          externalAudioBuffer = await decodeAudioBuffer(arrayBuffer);
+          redrawExternalWaveform();
+        } catch (err) {
+          console.warn(ts(), "[waveform] External audio decode failed:", err);
+          externalAudioBuffer = null;
+          drawFlatFallback(audioCanvas, audioCtx2d);
+        }
+      }
+
+      function getTargetAudioTime() {
+        return videoPlayer.currentTime - getOffset();
+      }
+
+      function syncAudioToVideo() {
+        if (!audioFile || !audioUrl) return;
+
+        const target = getTargetAudioTime();
+
+        if (target < 0) {
+          audioPlayer.pause();
+          if (audioPlayer.currentTime !== 0) {
+            audioPlayer.currentTime = 0;
+          }
+          return;
+        }
+
+        if (audioPlayer.duration && target > audioPlayer.duration) {
+          audioPlayer.pause();
+          return;
+        }
+
+        if (Math.abs(audioPlayer.currentTime - target) > 0.1) {
+          audioPlayer.currentTime = target;
+        }
+
+        if (!videoPlayer.paused && audioPlayer.paused) {
+          audioPlayer.play().catch((err) =>
+            console.warn("External audio play blocked:", err)
+          );
+        } else if (videoPlayer.paused && !audioPlayer.paused) {
+          audioPlayer.pause();
+        }
+      }
+
+      function drawProgressOverlay(progressCanvas, progressCtx) {
+        if (!videoPlayer.duration || isNaN(videoPlayer.duration)) return;
+
+        progressCtx.clearRect(0, 0, progressCanvas.width, progressCanvas.height);
+
+        const progress = videoPlayer.currentTime / videoPlayer.duration;
+        const progressX = progress * progressCanvas.width;
+
+        progressCtx.fillStyle = "rgba(74, 158, 255, 0.3)";
+        progressCtx.fillRect(0, 0, progressX, progressCanvas.height);
+
+        progressCtx.fillStyle = "rgba(255, 255, 255, 0.8)";
+        progressCtx.fillRect(progressX - 1, 0, 2, progressCanvas.height);
+      }
+
+      function animateProgressOverlays() {
+        drawProgressOverlay(videoProgressCanvas, videoProgressCtx);
+        drawProgressOverlay(audioProgressCanvas, audioProgressCtx);
+        requestAnimationFrame(animateProgressOverlays);
+      }
+
+      animateProgressOverlays();
+
+      function revokeUrl(url) {
+        if (url) URL.revokeObjectURL(url);
+      }
+
+      videoInput.addEventListener("change", async function () {
+        const file = this.files[0];
+        if (!file) return;
+
+        revokeUrl(videoUrl);
+        videoFile = file;
+        videoUrl = URL.createObjectURL(file);
+        videoFileName.textContent = file.name;
+
+        videoPlayer.src = videoUrl;
+        videoPlayer.load();
+        videoPlayer.muted = videoMuted;
+
+        await renderVideoWaveform();
+        redrawExternalWaveform();
+        updateSyncButton();
+      });
+
+      audioInput.addEventListener("change", async function () {
+        const file = this.files[0];
+        if (!file) return;
+
+        revokeUrl(audioUrl);
+        audioFile = file;
+        audioUrl = URL.createObjectURL(file);
+        audioFileName.textContent = file.name;
+
+        audioPlayer.src = audioUrl;
+        audioPlayer.load();
+
+        await renderExternalWaveform();
+        syncAudioToVideo();
+        updateSyncButton();
+      });
+
+      muteToggle.addEventListener("click", function () {
+        videoMuted = !videoMuted;
+        videoPlayer.muted = videoMuted;
+        muteToggle.textContent = videoMuted ? "Unmute video audio" : "Mute video audio";
+      });
+
+      function adjustOffset(delta) {
+        const current = getOffset();
+        offsetControl.value = (current + delta).toFixed(2);
+        redrawExternalWaveform();
+        syncAudioToVideo();
+      }
+
+      offsetControl.addEventListener("input", function () {
+        redrawExternalWaveform();
+        syncAudioToVideo();
+      });
+
+      videoPlayer.addEventListener("loadedmetadata", () => {
+        redrawExternalWaveform();
+      });
+
+      document.getElementById("offsetMinus1").addEventListener("click", () => adjustOffset(-1));
+      document.getElementById("offsetMinus01").addEventListener("click", () => adjustOffset(-0.1));
+      document.getElementById("offsetPlus01").addEventListener("click", () => adjustOffset(0.1));
+      document.getElementById("offsetPlus1").addEventListener("click", () => adjustOffset(1));
+
+      ["play", "pause", "seeked", "timeupdate", "ratechange"].forEach((event) => {
+        videoPlayer.addEventListener(event, syncAudioToVideo);
+      });
+
+      videoCanvas.addEventListener("click", function (e) {
+        if (!videoPlayer.duration) return;
+        const rect = videoCanvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const percentage = x / rect.width;
+        videoPlayer.currentTime = Math.max(0, Math.min(percentage * videoPlayer.duration, videoPlayer.duration));
+        syncAudioToVideo();
+      });
+
+      audioCanvas.addEventListener("click", function (e) {
+        if (!videoPlayer.duration || !externalAudioBuffer) return;
+        const rect = audioCanvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const shiftPx = getExternalWaveformShiftPx();
+        const audioTimeAtClick = ((x - shiftPx) / rect.width) * externalAudioBuffer.duration;
+        const videoTime = audioTimeAtClick + getOffset();
+        videoPlayer.currentTime = Math.max(0, Math.min(videoTime, videoPlayer.duration));
+        syncAudioToVideo();
+      });
+
+      function triggerDownload(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      syncDownload.addEventListener("click", async function () {
+        if (!videoFile || !audioFile || isExporting) return;
+
+        isExporting = true;
+        updateSyncButton();
+        setStatus("Preparing export\u2026");
+
+        const offset = getOffset();
+        const offsetStr = String(offset);
+
+        try {
+          const ff = await getFFmpeg();
+          const mountDir = "/input";
+          const videoName = safeFfmpegInputName(videoFile.name, ".mp4");
+          const audioName = safeFfmpegInputName(audioFile.name, ".mp3");
+          const videoPath = `${mountDir}/${videoName}`;
+          const audioPath = `${mountDir}/${audioName}`;
+          const outputName = "synced.mp4";
+
+          const videoInputFile =
+            videoFile.name === videoName
+              ? videoFile
+              : new File([videoFile], videoName, { type: videoFile.type });
+          const audioInputFile =
+            audioFile.name === audioName
+              ? audioFile
+              : new File([audioFile], audioName, { type: audioFile.type });
+
+          ff.on("progress", ({ progress }) => {
+            if (progress > 0) {
+              setStatus(`Encoding\u2026 ${Math.round(progress * 100)}%`);
+            }
+          });
+
+          await ff.createDir(mountDir);
+          await ff.mount("WORKERFS", { files: [videoInputFile, audioInputFile] }, mountDir);
+
+          try {
+            setStatus("Running ffmpeg\u2026");
+            await ff.exec([
+              "-y",
+              "-i", videoPath,
+              "-itsoffset", offsetStr,
+              "-i", audioPath,
+              "-map", "0:v:0",
+              "-map", "1:a:0",
+              "-c:v", "copy",
+              "-c:a", "aac",
+              "-b:a", "192k",
+              "-shortest",
+              "-movflags", "+faststart",
+              outputName,
+            ]);
+
+            const data = await ff.readFile(outputName);
+            const blob = new Blob([data.buffer], { type: "video/mp4" });
+            triggerDownload(blob, "synced.mp4");
+            setStatus("Download started.");
+            await ff.deleteFile(outputName);
+          } finally {
+            await ff.unmount(mountDir);
+            await ff.deleteDir(mountDir);
+          }
+        } catch (err) {
+          console.error(ts(), "[export] Failed:", err);
+          setStatus(`Export failed: ${err.message || err}`, true);
+        } finally {
+          isExporting = false;
+          updateSyncButton();
+        }
+      });
+    </script>
+  </body>
+</html>
