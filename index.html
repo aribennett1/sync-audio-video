@@ -928,6 +928,31 @@
         URL.revokeObjectURL(url);
       }
 
+      async function cleanupFfmpegFs(ff, mountDir, extraFiles) {
+        try {
+          await ff.unmount(mountDir);
+        } catch (_) {}
+        try {
+          await ff.deleteDir(mountDir);
+        } catch (_) {}
+        if (extraFiles) {
+          for (const path of extraFiles) {
+            try {
+              await ff.deleteFile(path);
+            } catch (_) {}
+          }
+        }
+      }
+
+      async function prepareMountDir(ff, mountDir) {
+        await cleanupFfmpegFs(ff, mountDir);
+        await ff.createDir(mountDir);
+      }
+
+      function mountFileAs(file, name) {
+        return new File([file], name, { type: file.type });
+      }
+
       syncDownload.addEventListener("click", async function () {
         if (videoQueue.length === 0 || !audioFile || isExporting) return;
 
@@ -938,89 +963,81 @@
         const offset = getOffset();
         const offsetStr = String(offset);
         const mountDir = "/input";
+        const concatPath = "/concat.txt";
         const outputName = "synced.mp4";
         const audioName = safeFfmpegInputName(audioFile.name, ".mp3");
         const audioPath = `${mountDir}/${audioName}`;
+        const audioInputFile = mountFileAs(audioFile, audioName);
 
         try {
           const ff = await getFFmpeg();
 
-          const audioInputFile =
-            audioFile.name === audioName
-              ? audioFile
-              : new File([audioFile], audioName, { type: audioFile.type });
+          ff.on("progress", ({ progress }) => {
+            if (progress > 0) {
+              const label =
+                videoQueue.length > 1
+                  ? `Joining ${videoQueue.length} clips and syncing audio`
+                  : "Encoding";
+              setStatus(`${label}\u2026 ${Math.round(progress * 100)}%`);
+            }
+          });
 
-          const mountFiles = [audioInputFile];
-          const execArgs = ["-y"];
+          const execTail = [
+            "-itsoffset", offsetStr,
+            "-i", audioPath,
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            "-movflags", "+faststart",
+            outputName,
+          ];
+
+          let execArgs;
+          let mountFiles;
+          const extraCleanup = [concatPath];
 
           if (videoQueue.length === 1) {
             const videoName = safeFfmpegInputName(videoQueue[0].file.name, ".mp4");
             const videoPath = `${mountDir}/${videoName}`;
-            const videoInputFile =
-              videoQueue[0].file.name === videoName
-                ? videoQueue[0].file
-                : new File([videoQueue[0].file], videoName, { type: videoQueue[0].file.type });
-            mountFiles.unshift(videoInputFile);
-
-            execArgs.push(
-              "-i", videoPath,
-              "-itsoffset", offsetStr,
-              "-i", audioPath,
-              "-map", "0:v:0",
-              "-map", "1:a:0",
-              "-c:v", "copy",
-              "-c:a", "aac",
-              "-b:a", "192k",
-              "-shortest",
-              "-movflags", "+faststart",
-              outputName
-            );
+            mountFiles = [
+              mountFileAs(videoQueue[0].file, videoName),
+              audioInputFile,
+            ];
+            execArgs = ["-y", "-i", videoPath, ...execTail];
           } else {
-          const mountFiles = videoQueue.map((item, index) => {
-              const name = queueMountName(index, item.file);
-              return item.file.name === name
-                ? item.file
-                : new File([item.file], name, { type: item.file.type });
-            });
+            mountFiles = videoQueue.map((item, index) =>
+              mountFileAs(item.file, queueMountName(index, item.file))
+            );
             mountFiles.push(audioInputFile);
 
-            const concatLines = videoQueue.map(
-              (item, index) => `file '${mountDir}/${queueMountName(index, item.file)}'`
-            );
+            const concatContent = videoQueue
+              .map(
+                (item, index) =>
+                  `file '${mountDir}/${queueMountName(index, item.file)}'`
+              )
+              .join("\n");
 
-            const concatPath = `${mountDir}/concat.txt`;
-            const concatContent = concatLines.join("\n");
-
-            execArgs.push(
+            execArgs = [
+              "-y",
               "-f", "concat",
               "-safe", "0",
               "-i", concatPath,
-              "-itsoffset", offsetStr,
-              "-i", audioPath,
-              "-map", "0:v:0",
-              "-map", "1:a:0",
-              "-c:v", "copy",
-              "-c:a", "aac",
-              "-b:a", "192k",
-              "-shortest",
-              "-movflags", "+faststart",
-              outputName
-            );
+              ...execTail,
+            ];
 
-            ff.on("progress", ({ progress }) => {
-              if (progress > 0) {
-                setStatus(
-                  `Joining ${videoQueue.length} clips and syncing audio\u2026 ${Math.round(progress * 100)}%`
-                );
-              }
-            });
-
-            await ff.createDir(mountDir);
+            await prepareMountDir(ff, mountDir);
             await ff.mount("WORKERFS", { files: mountFiles }, mountDir);
             await ff.writeFile(concatPath, concatContent);
 
             try {
-              setStatus(`Joining ${videoQueue.length} clips and syncing audio\u2026`);
+              setStatus(
+                videoQueue.length > 1
+                  ? `Joining ${videoQueue.length} clips and syncing audio\u2026`
+                  : "Running ffmpeg\u2026"
+              );
               await ff.exec(execArgs);
 
               const data = await ff.readFile(outputName);
@@ -1028,22 +1045,13 @@
               triggerDownload(blob, "synced.mp4");
               setStatus("Download started.");
               await ff.deleteFile(outputName);
-              await ff.deleteFile(concatPath);
             } finally {
-              await ff.unmount(mountDir);
-              await ff.deleteDir(mountDir);
+              await cleanupFfmpegFs(ff, mountDir, extraCleanup);
             }
-
             return;
           }
 
-          ff.on("progress", ({ progress }) => {
-            if (progress > 0) {
-              setStatus(`Encoding\u2026 ${Math.round(progress * 100)}%`);
-            }
-          });
-
-          await ff.createDir(mountDir);
+          await prepareMountDir(ff, mountDir);
           await ff.mount("WORKERFS", { files: mountFiles }, mountDir);
 
           try {
@@ -1056,8 +1064,7 @@
             setStatus("Download started.");
             await ff.deleteFile(outputName);
           } finally {
-            await ff.unmount(mountDir);
-            await ff.deleteDir(mountDir);
+            await cleanupFfmpegFs(ff, mountDir);
           }
         } catch (err) {
           console.error(ts(), "[export] Failed:", err);
