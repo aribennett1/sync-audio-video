@@ -101,11 +101,26 @@ All ffmpeg.wasm files are self-hosted from `vendor/ffmpeg/` for same-origin load
 
 Videos are mounted via **WORKERFS** so ffmpeg reads files in chunks without copying the entire video into memory.
 
+### Large exports (streaming save)
+
+Exports over **300 MB** total input size use a patched ffmpeg core that writes output to **OPFS** (browser disk storage) instead of MEMFS. The app then streams OPFS to your chosen save path in 16 MB chunks via the File System Access API (`showSaveFilePicker`). Peak tab memory stays bounded instead of scaling with output file size.
+
+| Size | Path |
+|------|------|
+| ≤ 300 MB | MEMFS + automatic blob download (all supported browsers) |
+| > 300 MB, Chrome/Edge | OPFS encode + save picker + chunked stream to disk |
+| > 300 MB, unsupported browser | Desktop `ffmpeg` commands shown in the UI |
+
+Requires cross-origin isolation (see `coi-serviceworker.js`) for SharedArrayBuffer and OPFS sync handles in the ffmpeg worker. See `vendor/ffmpeg/PATCHES.md` for patch details and rebuild steps.
+
+On Firefox, large exports may require granting persistent storage when prompted.
+
 ### Export limitations
 
 - **`-c:v copy`** requires MP4-compatible video codecs (typically H.264 or HEVC)
 - **Multi-clip join** with `-c:v copy` requires clips to share the same codec, resolution, and frame rate. Mixed formats may fail
-- Export runs entirely in the browser; very large files or many clips may be slow or hit memory limits depending on your device
+- Export runs entirely in the browser; very large files or many clips may be slow depending on your device
+- For exports over ~300 MB, use **Chrome or Edge** for streaming save, or use the desktop `ffmpeg` commands the app provides as a fallback
 
 ## Browser compatibility
 

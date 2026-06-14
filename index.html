@@ -288,6 +288,27 @@
       #statusText.error {
         color: #ff6b6b;
       }
+
+      #desktopCmd {
+        display: none;
+        margin-top: 12px;
+        padding: 12px;
+        text-align: left;
+        font-size: 12px;
+        line-height: 1.45;
+        color: #ccc;
+        background: #1a1a1a;
+        border: 1px solid #333;
+        border-radius: 4px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 240px;
+        overflow: auto;
+      }
+
+      #desktopCmd.visible {
+        display: block;
+      }
     </style>
   </head>
   <body>
@@ -349,6 +370,7 @@
           Sync and Download
         </button>
         <div id="statusText"></div>
+        <pre id="desktopCmd" aria-live="polite"></pre>
       </div>
     </div>
 
@@ -363,6 +385,7 @@
       const muteToggle = document.getElementById("muteToggle");
       const offsetControl = document.getElementById("offsetControl");
       const syncDownload = document.getElementById("syncDownload");
+      const desktopCmd = document.getElementById("desktopCmd");
       const statusText = document.getElementById("statusText");
       const queueList = document.getElementById("queueList");
 
@@ -386,6 +409,10 @@
       let ffmpegInstance = null;
       let ffmpegLoadPromise = null;
       let isExporting = false;
+
+      const LARGE_EXPORT_BYTES = 300 * 1024 * 1024;
+      const OPFS_EXPORT_PREFIX = "__opfs__/";
+      const OPFS_OUTPUT_NAME = "synced.mp4";
 
       const ts = () => `[${new Date().toISOString()}]`;
 
@@ -928,6 +955,190 @@
         URL.revokeObjectURL(url);
       }
 
+      function hideDesktopCommands() {
+        desktopCmd.textContent = "";
+        desktopCmd.classList.remove("visible");
+      }
+
+      function showDesktopCommands(text) {
+        desktopCmd.textContent = text;
+        desktopCmd.classList.add("visible");
+      }
+
+      function totalInputBytes() {
+        let total = audioFile ? audioFile.size : 0;
+        for (const item of videoQueue) {
+          total += item.file.size;
+        }
+        return total;
+      }
+
+      function supportsOpfsExport() {
+        return (
+          typeof navigator.storage?.getDirectory === "function" &&
+          typeof window.showSaveFilePicker === "function"
+        );
+      }
+
+      function opfsOutputPath() {
+        return OPFS_EXPORT_PREFIX + OPFS_OUTPUT_NAME;
+      }
+
+      function shouldUseOpfsExport() {
+        return totalInputBytes() > LARGE_EXPORT_BYTES && supportsOpfsExport();
+      }
+
+      async function ensureStoragePersistence() {
+        if (navigator.storage?.persist) {
+          try {
+            await navigator.storage.persist();
+          } catch (_) {}
+        }
+      }
+
+      async function clearOpfsExportFile(name) {
+        try {
+          const root = await navigator.storage.getDirectory();
+          await root.removeEntry(name, { recursive: false });
+        } catch (_) {}
+      }
+
+      async function streamOpfsToWritable(fileName, writable) {
+        const root = await navigator.storage.getDirectory();
+        const fileHandle = await root.getFileHandle(fileName);
+        const file = await fileHandle.getFile();
+        const reader = file.stream().getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            await writable.write(value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        await writable.close();
+      }
+
+      async function exportViaMemfs(ff, outputName) {
+        const data = await ff.readFile(outputName);
+        const blob = new Blob([data.buffer], { type: "video/mp4" });
+        triggerDownload(blob, OPFS_OUTPUT_NAME);
+        await ff.deleteFile(outputName);
+        setStatus("Download started.");
+      }
+
+      async function exportViaOpfs(ff, outputName, writable) {
+        try {
+          await ff.deleteFile(outputName);
+        } catch (_) {}
+        setStatus("Saving to disk\u2026");
+        await streamOpfsToWritable(outputName, writable);
+        await clearOpfsExportFile(outputName);
+        setStatus("Download complete.");
+      }
+
+      function buildDesktopFfmpegCommands(offsetStr) {
+        const lines = [
+          "Large export is not supported in this browser.",
+          "Use desktop ffmpeg with your source files instead:",
+          "",
+        ];
+
+        if (videoQueue.length === 1) {
+          lines.push(
+            "ffmpeg -y \\",
+            `  -i "${videoQueue[0].file.name}" \\`,
+            `  -itsoffset ${offsetStr} \\`,
+            `  -i "${audioFile.name}" \\`,
+            "  -map 0:v:0 -map 1:a:0 \\",
+            "  -c:v copy -c:a aac -b:a 192k \\",
+            "  -shortest -movflags +faststart \\",
+            "  synced.mp4"
+          );
+          return lines.join("\n");
+        }
+
+        lines.push(
+          "# Create concat.txt with one line per clip:",
+          "# file 'clip1.mp4'",
+          "# file 'clip2.mp4'",
+          "",
+          "ffmpeg -y \\",
+          "  -f concat -safe 0 -i concat.txt \\",
+          `  -itsoffset ${offsetStr} \\`,
+          `  -i "${audioFile.name}" \\`,
+          "  -map 0:v:0 -map 1:a:0 \\",
+          "  -c:v copy -c:a aac -b:a 192k \\",
+          "  -shortest -movflags +faststart \\",
+          "  synced.mp4"
+        );
+        return lines.join("\n");
+      }
+
+      function buildExportPlan(offsetStr, outputPath) {
+        const mountDir = "/input";
+        const concatPath = "/concat.txt";
+        const audioName = safeFfmpegInputName(audioFile.name, ".mp3");
+        const audioPath = `${mountDir}/${audioName}`;
+        const audioInputFile = mountFileAs(audioFile, audioName);
+        const execTail = [
+          "-itsoffset", offsetStr,
+          "-i", audioPath,
+          "-map", "0:v:0",
+          "-map", "1:a:0",
+          "-c:v", "copy",
+          "-c:a", "aac",
+          "-b:a", "192k",
+          "-shortest",
+          "-movflags", "+faststart",
+          outputPath,
+        ];
+
+        if (videoQueue.length === 1) {
+          const videoName = safeFfmpegInputName(videoQueue[0].file.name, ".mp4");
+          const videoPath = `${mountDir}/${videoName}`;
+          return {
+            mountDir,
+            mountFiles: [
+              mountFileAs(videoQueue[0].file, videoName),
+              audioInputFile,
+            ],
+            execArgs: ["-y", "-i", videoPath, ...execTail],
+            extraCleanup: [],
+            concatContent: null,
+            concatPath,
+          };
+        }
+
+        const mountFiles = videoQueue.map((item, index) =>
+          mountFileAs(item.file, queueMountName(index, item.file))
+        );
+        mountFiles.push(audioInputFile);
+
+        const concatContent = videoQueue
+          .map(
+            (item, index) =>
+              `file '${mountDir}/${queueMountName(index, item.file)}'`
+          )
+          .join("\n");
+
+        return {
+          mountDir,
+          mountFiles,
+          execArgs: [
+            "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", concatPath,
+            ...execTail,
+          ],
+          extraCleanup: [concatPath],
+          concatContent,
+          concatPath,
+        };
+      }
+
       async function cleanupFfmpegFs(ff, mountDir, extraFiles) {
         try {
           await ff.unmount(mountDir);
@@ -958,18 +1169,53 @@
 
         isExporting = true;
         updateSyncButton();
-        setStatus("Preparing export\u2026");
+        hideDesktopCommands();
 
         const offset = getOffset();
         const offsetStr = String(offset);
-        const mountDir = "/input";
-        const concatPath = "/concat.txt";
-        const outputName = "synced.mp4";
-        const audioName = safeFfmpegInputName(audioFile.name, ".mp3");
-        const audioPath = `${mountDir}/${audioName}`;
-        const audioInputFile = mountFileAs(audioFile, audioName);
+        const useOpfs = shouldUseOpfsExport();
+        const memfsOutputName = OPFS_OUTPUT_NAME;
+        const ffmpegOutputPath = useOpfs ? opfsOutputPath() : memfsOutputName;
+        const plan = buildExportPlan(offsetStr, ffmpegOutputPath);
+
+        let saveWritable = null;
 
         try {
+          if (totalInputBytes() > LARGE_EXPORT_BYTES && !supportsOpfsExport()) {
+            setStatus(
+              "This export is too large for in-browser memory. Use desktop ffmpeg:",
+              true
+            );
+            showDesktopCommands(buildDesktopFfmpegCommands(offsetStr));
+            return;
+          }
+
+          if (useOpfs) {
+            await ensureStoragePersistence();
+            await clearOpfsExportFile(memfsOutputName);
+            setStatus("Choose where to save synced.mp4\u2026");
+            let saveHandle;
+            try {
+              saveHandle = await window.showSaveFilePicker({
+                suggestedName: OPFS_OUTPUT_NAME,
+                types: [
+                  {
+                    description: "MP4 video",
+                    accept: { "video/mp4": [".mp4"] },
+                  },
+                ],
+              });
+              saveWritable = await saveHandle.createWritable();
+            } catch (err) {
+              if (err?.name === "AbortError") {
+                setStatus("Export cancelled.");
+                return;
+              }
+              throw err;
+            }
+          }
+
+          setStatus("Preparing export\u2026");
           const ff = await getFFmpeg();
 
           ff.on("progress", ({ progress }) => {
@@ -982,93 +1228,46 @@
             }
           });
 
-          const execTail = [
-            "-itsoffset", offsetStr,
-            "-i", audioPath,
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-shortest",
-            "-movflags", "+faststart",
-            outputName,
-          ];
+          await prepareMountDir(ff, plan.mountDir);
+          await ff.mount("WORKERFS", { files: plan.mountFiles }, plan.mountDir);
 
-          let execArgs;
-          let mountFiles;
-          const extraCleanup = [concatPath];
-
-          if (videoQueue.length === 1) {
-            const videoName = safeFfmpegInputName(videoQueue[0].file.name, ".mp4");
-            const videoPath = `${mountDir}/${videoName}`;
-            mountFiles = [
-              mountFileAs(videoQueue[0].file, videoName),
-              audioInputFile,
-            ];
-            execArgs = ["-y", "-i", videoPath, ...execTail];
-          } else {
-            mountFiles = videoQueue.map((item, index) =>
-              mountFileAs(item.file, queueMountName(index, item.file))
-            );
-            mountFiles.push(audioInputFile);
-
-            const concatContent = videoQueue
-              .map(
-                (item, index) =>
-                  `file '${mountDir}/${queueMountName(index, item.file)}'`
-              )
-              .join("\n");
-
-            execArgs = [
-              "-y",
-              "-f", "concat",
-              "-safe", "0",
-              "-i", concatPath,
-              ...execTail,
-            ];
-
-            await prepareMountDir(ff, mountDir);
-            await ff.mount("WORKERFS", { files: mountFiles }, mountDir);
-            await ff.writeFile(concatPath, concatContent);
-
-            try {
-              setStatus(
-                videoQueue.length > 1
-                  ? `Joining ${videoQueue.length} clips and syncing audio\u2026`
-                  : "Running ffmpeg\u2026"
-              );
-              await ff.exec(execArgs);
-
-              const data = await ff.readFile(outputName);
-              const blob = new Blob([data.buffer], { type: "video/mp4" });
-              triggerDownload(blob, "synced.mp4");
-              setStatus("Download started.");
-              await ff.deleteFile(outputName);
-            } finally {
-              await cleanupFfmpegFs(ff, mountDir, extraCleanup);
-            }
-            return;
+          if (plan.concatContent !== null) {
+            await ff.writeFile(plan.concatPath, plan.concatContent);
           }
-
-          await prepareMountDir(ff, mountDir);
-          await ff.mount("WORKERFS", { files: mountFiles }, mountDir);
 
           try {
-            setStatus("Running ffmpeg\u2026");
-            await ff.exec(execArgs);
+            setStatus(
+              videoQueue.length > 1
+                ? `Joining ${videoQueue.length} clips and syncing audio\u2026`
+                : "Running ffmpeg\u2026"
+            );
+            await ff.exec(plan.execArgs);
 
-            const data = await ff.readFile(outputName);
-            const blob = new Blob([data.buffer], { type: "video/mp4" });
-            triggerDownload(blob, "synced.mp4");
-            setStatus("Download started.");
-            await ff.deleteFile(outputName);
+            if (useOpfs) {
+              await exportViaOpfs(ff, memfsOutputName, saveWritable);
+            } else {
+              await exportViaMemfs(ff, memfsOutputName);
+            }
           } finally {
-            await cleanupFfmpegFs(ff, mountDir);
+            await cleanupFfmpegFs(ff, plan.mountDir, plan.extraCleanup);
           }
         } catch (err) {
+          if (saveWritable) {
+            try {
+              await saveWritable.abort();
+            } catch (_) {}
+          }
           console.error(ts(), "[export] Failed:", err);
-          setStatus(`Export failed: ${err.message || err}`, true);
+          const message = err?.message || String(err);
+          if (/allocation failed|expandFileStorage|out of memory/i.test(message)) {
+            setStatus(
+              "Export ran out of memory. For large files use Chrome/Edge, or desktop ffmpeg below.",
+              true
+            );
+            showDesktopCommands(buildDesktopFfmpegCommands(offsetStr));
+          } else {
+            setStatus(`Export failed: ${message}`, true);
+          }
         } finally {
           isExporting = false;
           updateSyncButton();
