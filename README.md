@@ -1,18 +1,21 @@
 # Audio/Video Sync Tool
 
-A browser-only tool for syncing external audio with video. Load separate video and audio files, preview them in sync with an adjustable offset, view the external audio waveform, and export a merged MP4 — all without a server.
+A browser-only tool for syncing external audio with video. Load one or more video files, preview them in sync with an adjustable offset, view the external audio waveform, and export a merged MP4 — all without a server.
 
 ## Features
 
-### Dual file loading
+### File loading
 
-- **Video**: Any browser-compatible video format (MP4, WebM, MKV, MOV, etc.)
-- **Audio**: Any browser-compatible audio format (MP3, WAV, OGG, AAC, etc.)
-- Load each file independently via separate file pickers
+- **Video queue**: Add one or many videos via the file picker (hold Ctrl/Cmd or Shift for multiple)
+- Drag and drop to reorder clips in the queue
+- Double-click a queue item to jump to that clip
+- Remove individual clips with the **Remove** button
+- Clips auto-advance when one finishes playing
+- **Audio**: Single external audio file (MP3, WAV, OGG, AAC, etc.)
 
 ### Synchronized preview
 
-- Video is the master clock; external audio follows automatically
+- Video queue plays sequentially; external audio follows on a **combined timeline**
 - **Offset control**: Adjust when external audio starts, with no upper or lower limit
   - Positive offset = audio starts later (matches ffmpeg `-itsoffset`)
   - Use the number input or ±0.1s / ±1s buttons for fine adjustment
@@ -21,13 +24,13 @@ A browser-only tool for syncing external audio with video. Load separate video a
 ### External audio waveform
 
 - Decoded with Web Audio API and rendered as a full-length waveform
-- Shifts horizontally to reflect the current offset relative to the video timeline
-- Progress overlay tracks video playback position
-- Click the waveform to seek
+- Shifts horizontally to reflect the current offset relative to the combined video timeline
+- Progress overlay tracks playback across all queued clips
+- Click the waveform to seek on the combined timeline
 
 ### Sync and Download
 
-Exports a merged MP4 using ffmpeg.wasm with these settings:
+**Single video** — same as before:
 
 ```bash
 ffmpeg -y \
@@ -40,16 +43,30 @@ ffmpeg -y \
   synced.mp4
 ```
 
-The result downloads as `synced.mp4` in your browser.
+**Multiple videos** — joins clips in queue order, then syncs audio in one pass:
+
+```bash
+ffmpeg -y \
+  -f concat -safe 0 -i concat.txt \
+  -itsoffset {offset} \
+  -i audio.mp3 \
+  -map 0:v:0 -map 1:a:0 \
+  -c:v copy -c:a aac -b:a 192k \
+  -shortest -movflags +faststart \
+  synced.mp4
+```
+
+Video is joined with stream copy (no re-encode). External audio is encoded to AAC. The result downloads as `synced.mp4`.
 
 ## Usage
 
 1. Open `index.html` in a modern browser (Chrome/Edge recommended)
 2. On first load, the page may reload once to activate cross-origin isolation for ffmpeg.wasm
-3. Select a **video** file and an **audio** file
-4. Play the video and adjust the offset until audio and video are in sync
-5. Optionally mute the video's built-in audio to hear only the external track
-6. Click **Sync and Download** to export the merged file
+3. Select one or more **video** files and an **audio** file
+4. Reorder videos in the queue if needed
+5. Play through the queue and adjust the offset until audio and video are in sync
+6. Optionally mute the video's built-in audio to hear only the external track
+7. Click **Sync and Download** to export the merged file
 
 ## Offset semantics
 
@@ -57,14 +74,15 @@ The offset value is passed directly to ffmpeg as `-itsoffset`:
 
 | Offset | Effect |
 |--------|--------|
-| `+2.0` | External audio starts 2 seconds after the video |
+| `+2.0` | External audio starts 2 seconds after the combined video starts |
 | `-3.0` | External audio starts 3 seconds before the video (audio is trimmed at export via `-shortest`) |
-| `0` | External audio starts at the same time as the video |
+| `0` | External audio starts at the same time as the first frame |
 
 During preview, external audio time is computed as:
 
 ```
-targetAudioTime = video.currentTime - offset
+globalVideoTime = sum(prior clip durations) + currentClipTime
+targetAudioTime = globalVideoTime - offset
 ```
 
 ## Technical details
@@ -81,12 +99,13 @@ All ffmpeg.wasm files are self-hosted from `vendor/ffmpeg/` for same-origin load
 
 ### Large video files
 
-Video is mounted via **WORKERFS** so ffmpeg reads the file in chunks without copying the entire video into memory.
+Videos are mounted via **WORKERFS** so ffmpeg reads files in chunks without copying the entire video into memory.
 
 ### Export limitations
 
-- **`-c:v copy`** only works when the video codec is MP4-compatible (typically H.264 or HEVC). Exotic codecs may fail or produce an unplayable file.
-- Export runs entirely in the browser; very large files may be slow or hit memory limits depending on your device.
+- **`-c:v copy`** requires MP4-compatible video codecs (typically H.264 or HEVC)
+- **Multi-clip join** with `-c:v copy` requires clips to share the same codec, resolution, and frame rate. Mixed formats may fail
+- Export runs entirely in the browser; very large files or many clips may be slow or hit memory limits depending on your device
 
 ## Browser compatibility
 
