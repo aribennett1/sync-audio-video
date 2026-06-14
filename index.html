@@ -1076,7 +1076,7 @@
         return lines.join("\n");
       }
 
-      function buildExportPlan(offsetStr, outputPath) {
+      function buildExportPlan(offsetStr, outputPath, useOpfs) {
         const mountDir = "/input";
         const concatPath = "/concat.txt";
         const audioName = safeFfmpegInputName(audioFile.name, ".mp3");
@@ -1091,9 +1091,11 @@
           "-c:a", "aac",
           "-b:a", "192k",
           "-shortest",
-          "-movflags", "+faststart",
-          outputPath,
         ];
+        if (!useOpfs) {
+          execTail.push("-movflags", "+faststart");
+        }
+        execTail.push(outputPath);
 
         if (videoQueue.length === 1) {
           const videoName = safeFfmpegInputName(videoQueue[0].file.name, ".mp4");
@@ -1176,7 +1178,7 @@
         const useOpfs = shouldUseOpfsExport();
         const memfsOutputName = OPFS_OUTPUT_NAME;
         const ffmpegOutputPath = useOpfs ? opfsOutputPath() : memfsOutputName;
-        const plan = buildExportPlan(offsetStr, ffmpegOutputPath);
+        const plan = buildExportPlan(offsetStr, ffmpegOutputPath, useOpfs);
 
         let saveWritable = null;
 

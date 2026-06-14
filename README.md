@@ -111,7 +111,7 @@ Exports over **300 MB** total input size use a patched ffmpeg core that writes o
 | > 300 MB, Chrome/Edge | OPFS encode + save picker + chunked stream to disk |
 | > 300 MB, unsupported browser | Desktop `ffmpeg` commands shown in the UI |
 
-Requires cross-origin isolation (see `coi-serviceworker.js`) for SharedArrayBuffer and OPFS sync handles in the ffmpeg worker. See `vendor/ffmpeg/PATCHES.md` for patch details and rebuild steps.
+Large exports omit `-movflags +faststart` because that flag triggers a full-file remux in WASM memory. The saved file plays normally; moov is at the end instead of the start.
 
 On Firefox, large exports may require granting persistent storage when prompted.
 

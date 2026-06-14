@@ -15,7 +15,9 @@ Unchanged: `ffmpeg.js`, `ffmpeg-core.wasm` (same upstream 0.12.6 / 0.12.10 pairi
 
 ## App usage
 
-When total input size exceeds **300 MB** and the browser supports OPFS + `showSaveFilePicker`, export passes output path `__opfs__/synced.mp4`. ffmpeg writes to OPFS during encode; the main thread streams OPFS → `FileSystemWritableFileStream` in 16 MB chunks. Small exports still use MEMFS + blob download.
+When total input size exceeds **300 MB** and the browser supports OPFS + `showSaveFilePicker`, export passes output path `__opfs__/synced.mp4`. ffmpeg writes to OPFS during encode; the main thread streams OPFS to your chosen save path. Small exports still use MEMFS + blob download.
+
+Large OPFS exports omit `-movflags +faststart` (that flag triggers a full-file WASM remux). The MEMFS patch hooks `stream_ops` **and** syncs `MEMFS.ops_table` (Emscripten caches op references at init). Also hooks `expandFileStorage`, `resizeFileStorage`, `setattr`, and `mmap`.
 
 ## Re-applying after upstream upgrades
 
